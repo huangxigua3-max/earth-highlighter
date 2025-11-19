@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Earth Location Highlighter</title>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: #000;
+            font-family: 'Segoe UI', sans-serif;
+        }
+
+        #canvas-container {
+            width: 100%;
+            height: 100vh;
+            position: absolute;
+            top: 0;
+            left: 0;
+            z-index: 1;
+        }
+
+        #ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            z-index: 10;
+        }
+
+        .selector-box {
+            position: absolute;
+            top: 30px;
+            right: 30px;
+            pointer-events: auto;
+            background: rgba(10, 10, 10, 0.7);
+            backdrop-filter: blur(12px);
+            padding: 20px;
+            border-radius: 12px;
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            box-shadow: 0 8px 32px rgba(0,0,0,0.6);
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        label {
+            color: #FF3366; /* 强调色 */
+            font-size: 11px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            margin-bottom: 4px;
+        }
+
+        select {
+            background: rgba(255,255,255,0.05);
+            color: #fff;
+            border: 1px solid rgba(255,255,255,0.2);
+            padding: 10px 12px;
+            border-radius: 6px;
+            font-size: 14px;
+            outline: none;
+            width: 180px;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        select:hover {
+            border-color: #FF3366;
+            background: rgba(255,255,255,0.1);
+        }
+        
+        select option {
+            background: #111;
+            color: #fff;
+        }
+
+        #status-text {
+            position: absolute;
+            bottom: 40px;
+            width: 100%;
+            text-align: center;
+            color: rgba(255, 255, 255, 0.3);
+            font-size: 12px;
+            letter-spacing: 3px;
+            text-transform: uppercase;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="ui-layer">
+        <div class="selector-box">
+            <label>Target Region</label>
+            <select id="country-select">
+                <option value="" disabled selected>Select Location...</option>
+                <!-- JS populates this -->
+            </select>
+        </div>
+        <div id="status-text">Initialize System...</div>
+    </div>
+
+    <div id="canvas-container"></div>
+
+    <!-- Shaders -->
+    <script type="x-shader/x-vertex" id="vertexShader">
+        varying vec3 vNormal;
+        void main() {
+            vNormal = normalize(normalMatrix * normal);
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+    </script>
+
+    <script type="x-shader/x-fragment" id="fragmentShader">
+        varying vec3 vNormal;
+        void main() {
+            float intensity = pow(0.6 - dot(vNormal, vec3(0, 0, 1.0)), 2.0);
+            gl_FragColor = vec4(0.2, 0.5, 1.0, 1.0) * intensity * 1.2;
+        }
+    </script>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+        // --- 经纬度数据 ---
+        const locations = [
+            { name: "China (Beijing)", lat: 39.9042, lon: 116.4074 },
+            { name: "USA (New York)", lat: 40.7128, lon: -74.0060 },
+            { name: "Japan (Tokyo)", lat: 35.6762, lon: 139.6503 },
+            { name: "UK (London)", lat: 51.5074, lon: -0.1278 },
+            { name: "France (Paris)", lat: 48.8566, lon: 2.3522 },
+            { name: "Russia (Moscow)", lat: 55.7558, lon: 37.6173 },
+            { name: "Australia (Sydney)", lat: -33.8688, lon: 151.2093 },
+            { name: "Egypt (Cairo)", lat: 30.0444, lon: 31.2357 },
+            { name: "Brazil (Rio)", lat: -22.9068, lon: -43.1729 },
+            { name: "India (New Delhi)", lat: 28.6139, lon: 77.2090 }
+        ];
+
+        // --- 场景配置 ---
+        const CONFIG = {
+            earthRadius: 5,
+            cameraDistance: 16,
+            highlightColor: 0xFF3366 // 霓虹红
+        };
+
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        
+        const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(0, 0, CONFIG.cameraDistance);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.shadowMap.enabled = true;
+        container.appendChild(renderer.domElement);
+
+        const controls = new OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.dampingFactor = 0.05;
+        controls.minDistance = CONFIG.earthRadius + 2;
+        controls.maxDistance = 100;
+        controls.enablePan = false;
+
+        // --- 纹理 ---
+        const loader = new THREE.TextureLoader();
+        const texPath = 'https://raw.githubusercontent.com/mrdoob/three.js/master/examples/textures/planets/';
+        
+        // --- 地球组 (Earth Group) ---
+        // 关键：我们将标记物(marker)放在 earthMesh 内部，这样它就会自动随地球旋转
+        const earthGroup = new THREE.Group();
+        earthGroup.rotation.z = 23.5 * Math.PI / 180; // 地轴倾角
+        scene.add(earthGroup);
+
+        // 1. 地球本体
+        const earthGeo = new THREE.SphereGeometry(CONFIG.earthRadius, 64, 64);
+        const earthMat = new THREE.MeshPhongMaterial({
+            map: loader.load(texPath + 'earth_atmos_2048.jpg'),
+            specularMap: loader.load(texPath + 'earth_specular_2048.jpg'),
+            normalMap: loader.load(texPath + 'earth_normal_2048.jpg'),
+            specular: new THREE.Color(0x333333),
+            shininess: 10
+        });
+        const earth = new THREE.Mesh(earthGeo, earthMat);
+        earthGroup.add(earth);
+
+        // 2. 云层
+        const cloudGeo = new THREE.SphereGeometry(CONFIG.earthRadius + 0.05, 64, 64);
+        const cloudMat = new THREE.MeshLambertMaterial({
+            map: loader.load(texPath + 'earth_clouds_1024.png'),
+            transparent: true,
+            opacity: 0.8,
+            blending: THREE.AdditiveBlending,
+            side: THREE.DoubleSide
+        });
+        const clouds = new THREE.Mesh(cloudGeo, cloudMat);
+        earthGroup.add(clouds);
+
+        // 3. 大气层光晕
+        const atmosGeo = new THREE.SphereGeometry(CONFIG.earthRadius + 1.2, 64, 64);
+        const atmosMat = new THREE.ShaderMaterial({
+            vertexShader: document.getElementById('vertexShader').textContent,
+            fragmentShader: document.getElementById('fragmentShader').textContent,
+            blending: THREE.AdditiveBlending,
+            side: THREE.BackSide,
+            transparent: true
+        });
+        const atmosphere = new THREE.Mesh(atmosGeo, atmosMat);
+        scene.add(atmosphere); // 大气层不随地球旋转
+
+        // --- 星空背景 ---
+        const starGeo = new THREE.BufferGeometry();
+        const starPos = [];
+        for(let i=0; i<2000; i++) {
+            const x = (Math.random()-0.5)*800;
+            const y = (Math.random()-0.5)*800;
+            const z = (Math.random()-0.5)*800;
+            starPos.push(x,y,z);
+        }
+        starGeo.setAttribute('position', new THREE.Float32BufferAttribute(starPos, 3));
+        const stars = new THREE.Points(starGeo, new THREE.PointsMaterial({color: 0xffffff, size: 0.5, transparent:true, opacity:0.6}));
+        scene.add(stars);
+
+        // --- 灯光 ---
+        scene.add(new THREE.AmbientLight(0x222222));
+        const sunLight = new THREE.DirectionalLight(0xffffff, 2.5);
+        sunLight.position.set(10, 5, 10);
+        scene.add(sunLight);
+
+        // --- 核心：高亮标记系统 (Marker System) ---
+        const markerGroup = new THREE.Group();
+        earth.add(markerGroup); // 绑定到地球Mesh上，随其旋转
+
+        // A. 标记点中心 (Probe)
+        const pinHeight = 1.5; // 探针高度
+        const pinGeo = new THREE.BufferGeometry().setFromPoints([
+            new THREE.Vector3(0, 0, 0), 
+            new THREE.Vector3(0, pinHeight, 0)
+        ]);
+        const pinMat = new THREE.LineBasicMaterial({ color: CONFIG.highlightColor, transparent: true, opacity: 0.8 });
+        const pinLine = new THREE.Line(pinGeo, pinMat);
+        markerGroup.add(pinLine);
+
+        // B. 地表脉冲圈 (Pulsing Ring)
+        const ringGeo = new THREE.RingGeometry(0.08, 0.15, 32);
+        const ringMat = new THREE.MeshBasicMaterial({ 
+            color: CONFIG.highlightColor, 
+            side: THREE.DoubleSide, 
+            transparent: true,
+            opacity: 0.8
+        });
+        const pulseRing = new THREE.Mesh(ringGeo, ringMat);
+        // 旋转环让其贴合球面 (Ring默认是XY平面，我们需要让它躺平)
+        pulseRing.rotation.x = -Math.PI / 2;
+        markerGroup.add(pulseRing);
+
+        // C. 目标点发光球 (Dot)
+        const dotGeo = new THREE.SphereGeometry(0.08, 16, 16);
+        const dotMat = new THREE.MeshBasicMaterial({ color: CONFIG.highlightColor });
+        const dot = new THREE.Mesh(dotGeo, dotMat);
+        markerGroup.add(dot);
+
+        // 初始隐藏
+        markerGroup.visible = false;
+
+
+        // --- 交互逻辑 ---
+
+        let isAutoRotating = true;
+        let targetCameraPos = null; // 用于相机飞行插值
+
+        const selectEl = document.getElementById('country-select');
+        locations.forEach(loc => {
+            const option = document.createElement('option');
+            option.value = JSON.stringify({ lat: loc.lat, lon: loc.lon });
+            option.textContent = loc.name;
+            selectEl.appendChild(option);
+        });
+
+        selectEl.addEventListener('change', (e) => {
+            const coords = JSON.parse(e.target.value);
+            highlightLocation(coords.lat, coords.lon);
+        });
+
+        // 恢复自动旋转如果手动操作
+        controls.addEventListener('start', () => {
+            targetCameraPos = null;
+            isAutoRotating = true;
+            document.getElementById('status-text').innerText = "Manual Control";
+        });
+
+        // --- 核心函数：经纬度定位与高亮 ---
+        function highlightLocation(lat, lon) {
+            isAutoRotating = false;
+            document.getElementById('status-text').innerText = "Target Locked / Positioning...";
+
+            // 1. 计算球面上的本地坐标 (Local Coordinates on Sphere)
+            // 这里的公式需要与 Three.js 的纹理映射方式对齐
+            const phi = (90 - lat) * (Math.PI / 180);
+            const theta = (lon + 180) * (Math.PI / 180); // Three.js 纹理通常需要偏移
+            
+            // 计算坐标
+            const r = CONFIG.earthRadius;
+            const x = -(r * Math.sin(phi) * Math.cos(theta));
+            const z = (r * Math.sin(phi) * Math.sin(theta));
+            const y = (r * Math.cos(phi));
+
+            // 2. 移动标记点 (在地球本地空间)
+            markerGroup.position.set(x, y, z);
+            
+            // 让标记点朝向外侧 (法线方向)
+            // position 本身就是从圆心出发的向量，直接 lookAt position 即可让 Y 轴朝向法线
+            // 但是 Ring 是 XY 平面，Line 是 Y 轴。
+            // 我们需要让 markerGroup 的 Y 轴 对准法线。
+            markerGroup.lookAt(new THREE.Vector3(0,0,0)); // 先看圆心
+            markerGroup.rotateX(Math.PI); // 翻转180度背对圆心，使 Y 轴朝外 (假设探针沿 +Y)
+            // 实际上最简单的方法：用 quaternion setFromUnitVectors
+            const targetV = new THREE.Vector3(x, y, z).normalize();
+            markerGroup.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), targetV); // 将 Up 向量对齐到目标法线
+
+            markerGroup.visible = true;
+
+            // 3. 计算相机的世界坐标目标 (World Target)
+            // 为了飞过去，我们需要知道这个点在世界空间哪里 (因为地球在转，且有倾角)
+            
+            // 创建一个临时的 Vector3 复制标记点的本地位置
+            const worldPos = new THREE.Vector3(x, y, z);
+            
+            // 依次应用地球的变换矩阵到这个向量上
+            worldPos.applyMatrix4(earth.matrixWorld); 
+            // 注意：matrixWorld 包含了旋转(rotation)和位置(position)
+
+            // 相机目标位置：从地心穿过目标点，向外延伸一段距离
+            // 向量 = 目标点世界坐标.normalize() * 距离
+            const targetVec = worldPos.clone().normalize().multiplyScalar(CONFIG.earthRadius + 8); // 距离地表8单位
+
+            targetCameraPos = targetVec;
+        }
+
+        // --- 动画循环 ---
+        let time = 0;
+
+        function animate() {
+            requestAnimationFrame(animate);
+            time += 0.02;
+
+            // 自转
+            if (isAutoRotating) {
+                earth.rotation.y += 0.0005;
+                clouds.rotation.y += 0.0006;
+            }
+
+            // 标记点特效动画 (脉冲)
+            if (markerGroup.visible) {
+                // 环的扩散动画
+                const scale = 1 + Math.sin(time * 3) * 0.5; // 1 ~ 1.5
+                pulseRing.scale.set(scale, scale, 1);
+                pulseRing.material.opacity = 0.8 - Math.sin(time * 3) * 0.3;
+                
+                // 探针伸缩
+                pinLine.scale.y = 1 + Math.sin(time * 5) * 0.2;
+            }
+
+            // 相机平滑飞行
+            if (targetCameraPos) {
+                // 如果地球还在转，我们需要实时更新目标的世界坐标
+                // 因为我们锁定的经纬度在转动
+                // 获取 markerGroup 当前的世界坐标
+                const currentMarkerWorldPos = new THREE.Vector3();
+                markerGroup.getWorldPosition(currentMarkerWorldPos);
+
+                // 计算该点正上方的相机位置
+                const idealCameraPos = currentMarkerWorldPos.clone().normalize().multiplyScalar(CONFIG.earthRadius + 8);
+                
+                // Lerp 移动相机
+                camera.position.lerp(idealCameraPos, 0.05);
+                
+                // 停止判定
+                if (camera.position.distanceTo(idealCameraPos) < 0.1) {
+                    // 接近目标后，我们可以稍微释放 targetCameraPos，或者保持追踪
+                    // 这里保持追踪模式
+                }
+            }
+
+            // 装饰动画
+            stars.rotation.y -= 0.0002;
+            clouds.rotation.x = Math.sin(time * 0.1) * 0.02;
+
+            controls.update();
+            renderer.render(scene, camera);
+        }
+
+        // Resize
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        animate();
+
+    </script>
+</body>
+</html>
